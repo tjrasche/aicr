@@ -111,14 +111,25 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: GitHubActions-UAT-AICR
 
-      # Capacity check (reads desired count and reservation ID from cluster config)
+      # Capacity check (reads desired count and reservation ID from cluster config).
+      # Uses the runner-preinstalled yq because Install tools runs later; if the
+      # cluster-config schema ever drifts, the explicit empty-value guard below
+      # surfaces the mismatch immediately instead of letting yq return empty
+      # silently and the AWS API reject a malformed reservation ID.
       - name: Check EC2 capacity reservation
         id: capacity
         run: |
           set -euo pipefail
-          GPU_WORKER='.compute.nodeGroups.workers[] | select(.name == "gpu-worker")'
+          GPU_WORKER='.compute.eks.nodeGroups.workers[] | select(.name == "gpu-worker")'
           DESIRED=$(yq eval "${GPU_WORKER} | .capacity.desired" "$CLUSTER_CONFIG")
           RESERVATION=$(yq eval "${GPU_WORKER} | .capacity.reservation.target" "$CLUSTER_CONFIG")
+          if [[ -z "${DESIRED}" || "${DESIRED}" == "null" || \
+                -z "${RESERVATION}" || "${RESERVATION}" == "null" ]]; then
+            echo "::error::Could not extract gpu-worker capacity from ${CLUSTER_CONFIG}." \
+                 "Check the .compute.eks.nodeGroups.workers schema." \
+                 "yq returned: desired='${DESIRED}', reservation='${RESERVATION}'"
+            exit 1
+          fi
           echo "Reservation: ${RESERVATION}, desired: ${DESIRED}"
 
           AVAILABLE=$(aws ec2 describe-capacity-reservations \
