@@ -214,21 +214,72 @@ func (n *NodeSnapshotter) measure(ctx context.Context) error {
 	return nil
 }
 
-// verifyGPUCollected checks that the snapshot contains a GPU measurement with
-// gpu-count > 0. Returns an error if no GPU was detected.
-func verifyGPUCollected(snap *Snapshot) error {
+// hasGPUData returns true when snap contains a GPU measurement with gpu-count > 0.
+// Uses st.GetInt64 which handles int, int64, and float64 (YAML/JSON round-trips
+// deliver integers as float64).
+func hasGPUData(snap *Snapshot) bool {
 	for _, m := range snap.Measurements {
 		if m.Type != measurement.TypeGPU {
 			continue
 		}
-		for _, st := range m.Subtypes {
-			if r, ok := st.Data[measurement.KeyGPUCount]; ok {
-				if v, ok := r.Any().(int); ok && v > 0 {
-					return nil
-				}
+		for i := range m.Subtypes {
+			count, err := m.Subtypes[i].GetInt64(measurement.KeyGPUCount)
+			if err == nil && count > 0 {
+				return true
 			}
 		}
 	}
+	return false
+}
+
+// verifyGPUCollected checks that the snapshot contains a GPU measurement with
+// gpu-count > 0. Returns an error if no GPU was detected.
+func verifyGPUCollected(snap *Snapshot) error {
+	if hasGPUData(snap) {
+		return nil
+	}
 	return errors.New(errors.ErrCodeNotFound,
 		"--require-gpu was set but no GPU was detected (neither NFD PCI enumeration nor nvidia-smi found GPUs)")
+}
+
+// hasGPUNodesInTopology returns true when any topology label key starts with
+// gpuNodeLabelPrefix (covers both gpu.present and gpu.product NFD labels).
+func hasGPUNodesInTopology(snap *Snapshot) bool {
+	for _, m := range snap.Measurements {
+		if m.Type != measurement.TypeNodeTopology {
+			continue
+		}
+		labels := m.GetSubtype("label")
+		if labels == nil {
+			continue
+		}
+		for key := range labels.Data {
+			if strings.HasPrefix(key, gpuNodeLabelPrefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// detectGPUPlacementMismatch returns true when the snapshot has no GPU data
+// but the cluster topology shows GPU-capable nodes via NFD labels.
+// This indicates the agent Job likely ran on a non-GPU node.
+func detectGPUPlacementMismatch(snap *Snapshot) bool {
+	return !hasGPUData(snap) && hasGPUNodesInTopology(snap)
+}
+
+// warnOnGPUPlacementMismatch emits a slog.Warn when detectGPUPlacementMismatch
+// returns true, providing actionable remediation steps.
+func warnOnGPUPlacementMismatch(snap *Snapshot) {
+	if !detectGPUPlacementMismatch(snap) {
+		return
+	}
+	slog.Warn("snapshot has no GPU data but cluster topology shows GPU-capable nodes — agent likely ran on a non-GPU node",
+		slog.String("detection_note", "relies on nvidia.com/gpu.present/product labels (NFD); clusters without these labels are not detected"),
+		slog.String("fix_1", "--node-selector nvidia.com/gpu.present=true (after GPU Operator/NFD)"),
+		slog.String("fix_2", "--node-selector kubernetes.io/hostname=<gpu-node> (before GPU Operator)"),
+		slog.String("fix_3", "--require-gpu (requests nvidia.com/gpu resource; needs Device Plugin)"),
+		slog.String("fix_4", "--runtime-class nvidia (nvidia-smi access without consuming a GPU slot)"),
+	)
 }

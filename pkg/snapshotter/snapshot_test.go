@@ -381,6 +381,187 @@ func (m *mockCollector) Collect(ctx context.Context) (*measurement.Measurement, 
 	}, nil
 }
 
+func TestHasGPUData(t *testing.T) {
+	tests := []struct {
+		name string
+		snap *Snapshot
+		want bool
+	}{
+		{
+			name: "gpu-count int > 0 returns true",
+			snap: &Snapshot{Measurements: []*measurement.Measurement{
+				{Type: measurement.TypeGPU, Subtypes: []measurement.Subtype{{
+					Name: "smi",
+					Data: map[string]measurement.Reading{measurement.KeyGPUCount: measurement.Int(2)},
+				}}},
+			}},
+			want: true,
+		},
+		{
+			name: "gpu-count float64 > 0 returns true (YAML round-trip)",
+			snap: &Snapshot{Measurements: []*measurement.Measurement{
+				{Type: measurement.TypeGPU, Subtypes: []measurement.Subtype{{
+					Name: "smi",
+					Data: map[string]measurement.Reading{measurement.KeyGPUCount: measurement.Float64(2.0)},
+				}}},
+			}},
+			want: true,
+		},
+		{
+			name: "gpu-count int64 > 0 returns true",
+			snap: &Snapshot{Measurements: []*measurement.Measurement{
+				{Type: measurement.TypeGPU, Subtypes: []measurement.Subtype{{
+					Name: "smi",
+					Data: map[string]measurement.Reading{measurement.KeyGPUCount: measurement.Int64(4)},
+				}}},
+			}},
+			want: true,
+		},
+		{
+			name: "gpu-count zero returns false",
+			snap: &Snapshot{Measurements: []*measurement.Measurement{
+				{Type: measurement.TypeGPU, Subtypes: []measurement.Subtype{{
+					Name: "smi",
+					Data: map[string]measurement.Reading{measurement.KeyGPUCount: measurement.Int(0)},
+				}}},
+			}},
+			want: false,
+		},
+		{
+			name: "no GPU measurement returns false",
+			snap: &Snapshot{Measurements: []*measurement.Measurement{
+				{Type: measurement.TypeK8s, Subtypes: []measurement.Subtype{}},
+			}},
+			want: false,
+		},
+		{
+			name: "empty measurements returns false",
+			snap: NewSnapshot(),
+			want: false,
+		},
+		{
+			name: "hardware subtype with gpu-count > 0 returns true",
+			snap: &Snapshot{Measurements: []*measurement.Measurement{
+				{Type: measurement.TypeGPU, Subtypes: []measurement.Subtype{{
+					Name: "hardware",
+					Data: map[string]measurement.Reading{measurement.KeyGPUCount: measurement.Int(4)},
+				}}},
+			}},
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasGPUData(tt.snap)
+			if got != tt.want {
+				t.Errorf("hasGPUData() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDetectGPUPlacementMismatch(t *testing.T) {
+	gpuPresent := func(key string) *Snapshot {
+		return &Snapshot{Measurements: []*measurement.Measurement{
+			{Type: measurement.TypeNodeTopology, Subtypes: []measurement.Subtype{{
+				Name: "label",
+				Data: map[string]measurement.Reading{
+					key: measurement.Str("true|node1,node2"),
+				},
+			}}},
+		}}
+	}
+
+	tests := []struct {
+		name string
+		snap *Snapshot
+		want bool
+	}{
+		{
+			name: "no GPU data and topology has gpu.present label — mismatch detected",
+			snap: gpuPresent("nvidia.com/gpu.present"),
+			want: true,
+		},
+		{
+			name: "no GPU data and topology has disambiguated gpu.present.true label — mismatch detected",
+			snap: gpuPresent("nvidia.com/gpu.present.true"),
+			want: true,
+		},
+		{
+			name: "no GPU data and topology has gpu.product label — mismatch detected",
+			snap: gpuPresent("nvidia.com/gpu.product.NVIDIA-H100-80GB-HBM3"),
+			want: true,
+		},
+		{
+			name: "GPU data present — no mismatch",
+			snap: &Snapshot{Measurements: []*measurement.Measurement{
+				{Type: measurement.TypeGPU, Subtypes: []measurement.Subtype{{
+					Name: "smi",
+					Data: map[string]measurement.Reading{measurement.KeyGPUCount: measurement.Int(2)},
+				}}},
+				{Type: measurement.TypeNodeTopology, Subtypes: []measurement.Subtype{{
+					Name: "label",
+					Data: map[string]measurement.Reading{
+						"nvidia.com/gpu.present": measurement.Str("true|node1"),
+					},
+				}}},
+			}},
+			want: false,
+		},
+		{
+			name: "no GPU data and no topology GPU labels — no mismatch (pre-Operator cluster)",
+			snap: &Snapshot{Measurements: []*measurement.Measurement{
+				{Type: measurement.TypeNodeTopology, Subtypes: []measurement.Subtype{{
+					Name: "label",
+					Data: map[string]measurement.Reading{
+						"kubernetes.io/hostname": measurement.Str("node1|node1"),
+					},
+				}}},
+			}},
+			want: false,
+		},
+		{
+			name: "empty snapshot — no mismatch",
+			snap: NewSnapshot(),
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := detectGPUPlacementMismatch(tt.snap)
+			if got != tt.want {
+				t.Errorf("detectGPUPlacementMismatch() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWarnOnGPUPlacementMismatch(t *testing.T) {
+	// warnOnGPUPlacementMismatch has no return value; we verify it doesn't panic
+	// under both the mismatch and no-mismatch conditions.
+	t.Run("no-op when no mismatch", func(t *testing.T) {
+		snap := &Snapshot{Measurements: []*measurement.Measurement{
+			{Type: measurement.TypeGPU, Subtypes: []measurement.Subtype{{
+				Name: "smi",
+				Data: map[string]measurement.Reading{measurement.KeyGPUCount: measurement.Int(2)},
+			}}},
+		}}
+		warnOnGPUPlacementMismatch(snap) // must not panic
+	})
+
+	t.Run("warns when mismatch detected", func(t *testing.T) {
+		snap := &Snapshot{Measurements: []*measurement.Measurement{
+			{Type: measurement.TypeNodeTopology, Subtypes: []measurement.Subtype{{
+				Name: "label",
+				Data: map[string]measurement.Reading{
+					"nvidia.com/gpu.present": measurement.Str("true|node1"),
+				},
+			}}},
+		}}
+		warnOnGPUPlacementMismatch(snap) // must not panic; warning emitted to slog
+	})
+}
+
 func TestParseOSEnv(t *testing.T) {
 	// "unset" is the truly-absent case (the env var is removed). The other
 	// cases set AICR_OS to a literal value via t.Setenv.

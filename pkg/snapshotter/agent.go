@@ -125,6 +125,11 @@ type AgentConfig struct {
 // It creates the deployer, deploys RBAC and the Job, streams logs, waits for completion,
 // and retrieves the snapshot data from the result ConfigMap.
 func deployAndWaitForResult(ctx context.Context, clientset k8sclient.Interface, config *AgentConfig, agentOutput string) ([]byte, error) {
+	// Auto-inject GPU node selector when no placement constraints are set.
+	// Returns true when injection occurred, so the wait-timeout error can
+	// name the injected selector (TOCTOU: node may be cordoned after detection).
+	autoInjectedGPUSelector := maybeInjectGPUNodeSelector(ctx, clientset, config)
+
 	agentConfig := agent.Config{
 		Namespace:          config.Namespace,
 		ServiceAccountName: config.ServiceAccountName,
@@ -219,7 +224,12 @@ func deployAndWaitForResult(ctx context.Context, clientset k8sclient.Interface, 
 			fmt.Fprintln(logWriter(), logs)
 			fmt.Fprintln(logWriter(), "--- end logs ---")
 		}
-		return nil, errors.Wrap(errors.ErrCodeInternal, "job failed", waitErr)
+		msg := "job failed"
+		if autoInjectedGPUSelector {
+			msg = "job failed (auto-injected node selector nvidia.com/gpu.present=true — " +
+				"if no GPU nodes are schedulable, pass --node-selector or --require-gpu explicitly)"
+		}
+		return nil, errors.Wrap(errors.ErrCodeInternal, msg, waitErr)
 	}
 
 	slog.Info("job completed successfully")
@@ -275,6 +285,8 @@ func DeployAndGetSnapshot(ctx context.Context, config *AgentConfig) (*Snapshot, 
 	if err := yaml.Unmarshal(snapshotData, &snap); err != nil {
 		return nil, errors.Wrap(errors.ErrCodeInternal, "failed to parse snapshot data", err)
 	}
+
+	warnOnGPUPlacementMismatch(&snap)
 
 	return &snap, nil
 }
@@ -501,6 +513,13 @@ func (n *NodeSnapshotter) measureWithAgent(ctx context.Context) error {
 	snapshotData, err := deployAndWaitForResult(ctx, clientset, n.AgentConfig, agentOutput)
 	if err != nil {
 		return err
+	}
+
+	// Post-collection safety net: warn if no GPU data but cluster shows GPU nodes.
+	// Unmarshal into a local Snapshot for the check only; output path uses raw bytes.
+	var snapForCheck Snapshot
+	if unmarshalErr := yaml.Unmarshal(snapshotData, &snapForCheck); unmarshalErr == nil {
+		warnOnGPUPlacementMismatch(&snapForCheck)
 	}
 
 	// If template is specified, process the snapshot through the template
