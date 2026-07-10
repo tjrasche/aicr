@@ -215,6 +215,11 @@ var supportedNCCLCombinations = map[ncclVariant]map[recipe.CriteriaServiceType][
 		// runtime template and the same calibrated >= 300 GB/s floor.
 		recipe.CriteriaServiceEKS: {recipe.CriteriaAcceleratorH100, recipe.CriteriaAcceleratorH200},
 		recipe.CriteriaServiceGKE: {recipe.CriteriaAcceleratorH100},
+		// AKS ND-series H100 (e.g. Standard_ND96isr_H100_v5): 8x H100 SXM
+		// intra-node NVLink, 8x 400Gb NDR InfiniBand inter-node via the
+		// network-operator rdma-shared-device-plugin. NCCL uses its built-in
+		// IB/verbs transport (see testdata/h100/aks/runtime.yaml).
+		recipe.CriteriaServiceAKS: {recipe.CriteriaAcceleratorH100},
 		recipe.CriteriaServiceAny: {recipe.CriteriaAcceleratorB200, recipe.CriteriaAcceleratorGB200},
 	},
 	variantNET: {
@@ -328,6 +333,16 @@ func validateNcclAllReduceBw(ctx *validators.Context, constraint recipe.Constrai
 	// Parse bandwidth from logs (shared across all service types).
 	bandwidth, err := parseBandwidthFromLogs(logs)
 	if err != nil {
+		// The launcher pod succeeded but its log yielded no parseable bandwidth
+		// row. Surface the retrieved log into report.json the way the pod-failed
+		// path does via emitDiagnosticBlock — without it, a succeeded-but-
+		// unparseable run is a dead end: we cannot tell an empty/truncated log
+		// capture from a benchmark that exited 0 without emitting the results
+		// table. (The caller discards the returned logs string on error, so
+		// logging is the only way this reaches the check's captured stdout.)
+		slog.Error("NCCL launcher succeeded but bandwidth could not be parsed; dumping launcher log",
+			"logBytes", len(logs))
+		emitDiagnosticBlock("launcher log (bandwidth parse failed)", tailLines(strings.TrimSpace(logs), maxDiagLogLines))
 		return logs, false, aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "failed to parse bandwidth from logs", err)
 	}
 
@@ -701,6 +716,16 @@ func applyNCCLResources(ctx *validators.Context, dynamicClient dynamic.Interface
 		}
 	}
 
+	// For AKS, discover the rdma-shared-device-plugin resource on the target
+	// GPU nodes. ND-series InfiniBand SKUs expose the node's IB HCAs through a
+	// shared pool (rdma/hca_shared_devices_a); a worker requests one unit to
+	// have every /dev/infiniband device mounted. A count of 0 is valid —
+	// NCCL falls back to TCP over the pod network (slower but functional),
+	// mirroring the EKS zero-EFA behavior above.
+	if service == recipe.CriteriaServiceAKS {
+		applyAKSTemplateData(config, templateData)
+	}
+
 	// Build effective worker scheduling: user override takes precedence over platform default.
 	defaultNodeSelector, defaultTolerations, err := platformWorkerScheduling(service, instanceType, config.Nodes)
 	if err != nil {
@@ -1055,7 +1080,7 @@ func createUnstructured(ctx context.Context, dynamicClient dynamic.Interface, gv
 // platformWorkerScheduling returns the default nodeSelector and tolerations
 // for NCCL worker pods on the given service. instanceType is only used for EKS;
 // nodes (the accelerator-narrowed target set from resolveTargetGPUNodes) is
-// used for GKE (the gke-accelerator label) and OKE (the shared
+// used for GKE (the gke-accelerator label) and OKE/AKS (the shared
 // nvidia.com/gpu.product label).
 func platformWorkerScheduling(service recipe.CriteriaServiceType, instanceType string, nodes []v1.Node) (map[string]string, []v1.Toleration, error) {
 	switch service {
@@ -1081,7 +1106,7 @@ func platformWorkerScheduling(service recipe.CriteriaServiceType, instanceType s
 			{Operator: v1.TolerationOpExists},
 			{Key: "nvidia.com/gpu", Operator: v1.TolerationOpEqual, Value: "present", Effect: v1.TaintEffectNoSchedule},
 		}, nil
-	case recipe.CriteriaServiceOKE:
+	case recipe.CriteriaServiceOKE, recipe.CriteriaServiceAKS:
 		// OKE bare-metal GB200 pools are commonly tainted and may coexist
 		// with other GPU shapes under one control plane. Tolerate the pool
 		// taint (mirroring EKS/GKE) and pin workers to the same cohort the
@@ -1090,12 +1115,19 @@ func platformWorkerScheduling(service recipe.CriteriaServiceType, instanceType s
 		// on. On non-GFD installs no shared product label exists, so emit no
 		// selector — matching the counting path's unfiltered fallback so the
 		// two stay aligned.
+		//
+		// AKS shares this shape: GPU pools carry the nvidia.com/gpu=present:
+		// NoSchedule taint and AICR recipes deploy the GPU Operator with GFD,
+		// so gpu.product (e.g. NVIDIA-H100-80GB-HBM3) is the discriminating
+		// label. The AKS-native kubernetes.azure.com/accelerator label is not
+		// used because its value is just "nvidia" — it cannot pin the H100
+		// cohort narrowByAccelerator sized the job against.
 		var nodeSelector map[string]string
 		if product := commonGPUProduct(nodes); product != "" {
 			nodeSelector = map[string]string{gpuProductLabel: product}
 		}
 		return nodeSelector, []v1.Toleration{{Operator: v1.TolerationOpExists}}, nil
-	case recipe.CriteriaServiceAny, recipe.CriteriaServiceAKS, recipe.CriteriaServiceOCP, recipe.CriteriaServiceKind, recipe.CriteriaServiceLKE, recipe.CriteriaServiceBCM, recipe.CriteriaServiceMetal3:
+	case recipe.CriteriaServiceAny, recipe.CriteriaServiceOCP, recipe.CriteriaServiceKind, recipe.CriteriaServiceLKE, recipe.CriteriaServiceBCM, recipe.CriteriaServiceMetal3:
 		return nil, nil, nil
 	default:
 		return nil, nil, nil
@@ -1315,14 +1347,76 @@ func waitForLauncherPodAndGetLogs(ctx *validators.Context, podHelper *helper.Pod
 		return logs, aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "pod failed to complete successfully", err)
 	}
 
-	// Get logs from completed pod using helper method
+	// Get logs from the completed pod. A pod that has just reached Succeeded can
+	// briefly serve an empty or truncated log if its container is being torn down
+	// mid-read, and the NCCL results table (which parseBandwidthFromLogs keys on)
+	// prints last — so re-read until the results are present before returning.
 	slog.Info("Retrieving logs from successful pod...")
-	logs, err := podHelper.GetPodLogs(ctx.Ctx, launcherPod)
+	logs, err := getCompleteLauncherLogs(ctx.Ctx, podHelper, launcherPod)
 	if err != nil {
 		return "", aicrErrors.Wrap(aicrErrors.ErrCodeInternal, "failed to get pod logs", err)
 	}
 
 	return logs, nil
+}
+
+// ncclLauncherLogComplete reports whether a launcher log contains the NCCL
+// results parseBandwidthFromLogs needs. all_reduce_perf prints its "Avg bus
+// bandwidth" summary line only after the full size sweep finishes, so its
+// presence guarantees the trailing largest-message-size row — the row the parser
+// keys on (last regexp match) — is already in the log. We deliberately do NOT
+// accept a bare data-row match here: an early row can appear while the log is
+// still streaming, and gating on it would let the retry loop short-circuit
+// before the largest row lands, defeating the purpose (parseBandwidthFromLogs
+// would then read a smaller-size row).
+func ncclLauncherLogComplete(logs string) bool {
+	return strings.Contains(logs, "Avg bus bandwidth")
+}
+
+// getCompleteLauncherLogs retrieves the launcher pod's logs, re-reading until the
+// NCCL results are present or the attempt budget is exhausted. A pod that has
+// just reached Succeeded can serve an empty or truncated log if its container is
+// torn down while we read; because the parser keys on the trailing
+// largest-message-size row, a truncated read loses exactly that row and yields
+// "could not find bandwidth value in logs".
+func getCompleteLauncherLogs(ctx context.Context, podHelper *helper.PodLifecycle, pod *v1.Pod) (string, error) {
+	return readLauncherLogsUntilComplete(ctx,
+		func(c context.Context) (string, error) { return podHelper.GetPodLogs(c, pod) },
+		defaults.NCCLLauncherLogReadAttempts, defaults.NCCLLauncherLogReadInterval)
+}
+
+// readLauncherLogsUntilComplete re-reads via fetch until ncclLauncherLogComplete
+// is satisfied or attempts is exhausted, sleeping interval between tries. It
+// returns the last read even when still incomplete, so the caller's parse-failure
+// path can surface it for diagnosis rather than discarding it. Split from
+// getCompleteLauncherLogs so the retry logic is unit-testable without a cluster.
+func readLauncherLogsUntilComplete(ctx context.Context, fetch func(context.Context) (string, error), attempts int, interval time.Duration) (string, error) {
+	var logs string
+	for attempt := 1; ; attempt++ {
+		var err error
+		logs, err = fetch(ctx)
+		if err != nil {
+			return "", err
+		}
+		if ncclLauncherLogComplete(logs) {
+			if attempt > 1 {
+				slog.Info("launcher log complete after re-read", "attempts", attempt, "logBytes", len(logs))
+			}
+			return logs, nil
+		}
+		if attempt >= attempts {
+			slog.Warn("launcher log still lacks NCCL results after re-reads; returning last read for diagnosis",
+				"attempts", attempt, "logBytes", len(logs))
+			return logs, nil
+		}
+		slog.Info("launcher log has no NCCL results yet; re-reading", "attempt", attempt, "logBytes", len(logs))
+		select {
+		case <-ctx.Done():
+			// Return what we have; the caller's parse path will surface it.
+			return logs, nil
+		case <-time.After(interval):
+		}
+	}
 }
 
 // maxDiagLogLines bounds how many trailing log lines are kept per worker

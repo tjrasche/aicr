@@ -42,7 +42,7 @@ and `resourceslices`.
 ## Dynamic Resource Allocation (DRA)
 
 All AKS GPU recipes include the `nvidia-dra-driver-gpu` component, which exposes
-GPU resources via the Kubernetes DRA API. In the supported configuration,
+GPU resources via the Kubernetes DRA API. In the production default,
 whole-GPU allocation goes through the device plugin (`nvidia.com/gpu` limits),
 while DRA serves ComputeDomain/IMEX channels and other structured resources —
 claim-based allocation, structured device advertisement, and gang-scheduling
@@ -81,38 +81,31 @@ policy is resolved.
 
 ### Device Plugin vs DRA
 
-Both device-plugin and DRA are enabled by default, but **only one should be used
-per node**. Using both concurrently causes GPU over-admission — both systems
-advertise all GPUs independently, so the scheduler may admit more GPU pods than
-physical GPUs available.
+Exactly **one whole-GPU advertiser per node** is required. Enabling both
+concurrently causes GPU over-admission — the two allocators keep independent
+ledgers, so dual advertisement can double-allocate or contend for the same
+physical GPU — and **recipe-backed validation rejects** a dual-advertised
+configuration with an invalid-request error at policy-resolution time
+(running `aicr validate` is what enforces this; recipe/bundle generation
+alone does not invoke the resolver, so skipping validation bypasses the
+check).
 
-For device-plugin whole-GPU allocation (recommended — matches the NVIDIA DRA
-driver's supported configuration; the DRA driver stays active for
-ComputeDomain/IMEX and other non-GPU resources, only its full-GPU
-advertisement is disabled), set the policy tuple in a recipe overlay:
-
-```yaml
-spec:
-  componentRefs:
-    - name: nvidia-dra-driver-gpu
-      overrides:
-        gpuResourcesEnabledOverride: false
-        resources:
-          gpus:
-            enabled: false
-    - name: gpu-operator
-      overrides:
-        devicePlugin:
-          enabled: true
-```
+**Device-plugin whole-GPU allocation is the production default** — stock
+recipes ship it out of the box (`resources.gpus.enabled: false` and
+`gpuResourcesEnabledOverride: false` in the `nvidia-dra-driver-gpu` component
+values, `devicePlugin.enabled: true` in the `gpu-operator` values), so no
+overlay or `--set` is needed. The DRA driver stays active for
+ComputeDomain/IMEX and other non-GPU resources; only its full-GPU
+advertisement is disabled.
 
 For DRA-only (experimental — the validators exercise ResourceClaims and
 discover DRA-only nodes from the allocation probe under this policy, but full
 `aicr validate` is not guaranteed until the
 [#1327](https://github.com/NVIDIA/aicr/issues/1327) graduation checklist
-passes; the one device-plugin-converted demo manifest,
-`vllm-metrics-test.yaml`, is likewise unschedulable there), the opt-in
-overlay must change all three values:
+passes; the stock demo/workload manifests request scalar `nvidia.com/gpu`
+and are likewise unschedulable there), the opt-in overlay must change all
+three values together — a partial flip is rejected at resolution time (dual
+advertisement, an inert waiver, or no advertiser at all):
 
 ```yaml
 spec:
@@ -180,11 +173,23 @@ time. See
 `Standard_ND96isr_H100_v5` is the 8-GPU ND H100 v5 SKU. The AKS Dynamo
 inference throughput gate (`inference-throughput`) is a fixed absolute
 **full-node** floor calibrated on an 8-GPU H100 node, so this SKU is the
-supported happy path for that gate. Smaller NCads H100 SKUs
-(`Standard_NC80adis_H100_v5` = 2 GPUs, `Standard_NC40ads_H100_v5` = 1 GPU) run
-fine for deployment but will false-fail the throughput floor; gate on
-`inference-ttft-p99` only on those until the per-GPU normalization in
+supported happy path for that gate. The same applies to the AKS H100 training
+NCCL gate (`nccl-all-reduce-bw >= 150`): its floor is calibrated on full
+ND96isr nodes using the Network Operator's RDMA shared device pool
+(`rdma/hca_shared_devices_a`) over the SKU's multi-HCA InfiniBand fabric.
+Smaller NCads H100 SKUs (`Standard_NC80adis_H100_v5` = 2 GPUs,
+`Standard_NC40ads_H100_v5` = 1 GPU) run fine for deployment but will
+false-fail both full-node floors — they lack the GPU count and IB fabric the
+calibrations assume; gate on `inference-ttft-p99` only on those until the
+per-GPU normalization in
 [#1254](https://github.com/NVIDIA/aicr/issues/1254) lands.
+
+The NCCL gate's benchmark pods pull the `nccl-tests` image from
+`public.ecr.aws` (AWS's public registry) — a cross-cloud pull when running on
+Azure. Private or egress-restricted AKS clusters must allow registry egress to
+`public.ecr.aws` or mirror the image into an Azure-reachable registry (e.g.
+ACR) before running the performance phase; otherwise the benchmark workers
+fail at image pull and the check fails without measuring anything.
 
 ### Alternative: Use the AKS Driver-Only Profile
 
