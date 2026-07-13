@@ -107,7 +107,12 @@ func (v *Validator) prepareCluster(
 	// Use PropagateOrWrap so a coded inner error (e.g. an invalid kubeconfig
 	// classified as a deterministic config error) survives instead of being
 	// blanket-relabeled ErrCodeInternal, which would mask it as retryable.
-	clientset, _, err := k8sclient.GetKubeClientWithConfig(v.Kubeconfig)
+	// Validation is exposed through long-lived SDK and controller processes, so
+	// build one client per run rather than using the unbounded, path-keyed cache
+	// intended for short-lived CLI operations. This also reloads kubeconfig files
+	// that were rotated or repointed between validation runs. clusterState reuses
+	// this client for every phase and for cleanup within the current run.
+	clientset, _, err := k8sclient.BuildKubeClient(v.Kubeconfig)
 	if err != nil {
 		return nil, errors.PropagateOrWrap(err, errors.ErrCodeInternal, "failed to create kubernetes client")
 	}
