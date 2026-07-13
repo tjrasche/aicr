@@ -16,6 +16,7 @@ package validator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -30,6 +31,7 @@ import (
 	v1 "github.com/NVIDIA/aicr/pkg/validator/v1"
 	"github.com/NVIDIA/aicr/recipes"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/kubernetes"
 )
 
 func TestNewDefaults(t *testing.T) {
@@ -94,6 +96,32 @@ func TestNewWithOptions(t *testing.T) {
 	}
 	if len(v.ImagePullSecrets) != 1 || v.ImagePullSecrets[0] != "secret1" {
 		t.Errorf("ImagePullSecrets = %v", v.ImagePullSecrets)
+	}
+}
+
+// TestPrepareClusterPropagatesCustomKubeconfig verifies the run-scoped path
+// reaches cluster client creation without reading a kubeconfig file or
+// contacting Kubernetes. The injected factory fails before any cluster API
+// operation, keeping this regression test hermetic and fail-safe.
+func TestPrepareClusterPropagatesCustomKubeconfig(t *testing.T) {
+	t.Parallel()
+
+	const wantKubeconfig = "/path/to/target-kubeconfig"
+	wantErr := errors.New("stop before cluster access")
+	v := New(WithKubeconfig(wantKubeconfig))
+
+	var gotKubeconfig string
+	v.kubeClientFactory = func(kubeconfig string) (kubernetes.Interface, error) {
+		gotKubeconfig = kubeconfig
+		return nil, wantErr
+	}
+
+	_, err := v.prepareCluster(t.Context(), nil, nil)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("prepareCluster() error = %v, want wrapped injected error", err)
+	}
+	if gotKubeconfig != wantKubeconfig {
+		t.Errorf("kubeconfig = %q, want %q", gotKubeconfig, wantKubeconfig)
 	}
 }
 

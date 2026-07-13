@@ -85,6 +85,11 @@ type Validator struct {
 	// dataProvider supplies the recipe data files used to load the validator
 	// catalog. When nil, catalog.Load falls back to the package-global provider.
 	dataProvider recipe.DataProvider
+
+	// kubeClientFactory is an internal test seam for cluster client creation.
+	// Production validators leave it nil and use the standard default/custom
+	// kubeconfig selection in prepareCluster.
+	kubeClientFactory kubeClientFactory
 }
 
 // PhaseResult is the outcome of running all validators in a single phase.
