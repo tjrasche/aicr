@@ -112,10 +112,10 @@ if err != nil {
 }
 
 // ValidateState runs the validation phases against the resolved recipe +
-// observed snapshot. Pass the same kubeconfig used for snapshot collection so
-// namespace, RBAC, ConfigMap, validator Job, and result operations all target
-// that cluster. With no WithValidationPhases option it runs all three phases
-// (Deployment, Conformance, Performance) in canonical order.
+// observed snapshot. Here, the same kubeconfig used for snapshot collection
+// ensures that namespace, RBAC, ConfigMap, validator Job, and result operations
+// all target that cluster. With no WithValidationPhases option it runs all three
+// phases (Deployment, Conformance, Performance) in canonical order.
 results, err := client.ValidateState(ctx, result, snap,
 	aicr.WithValidationKubeconfig("/path/to/target-kubeconfig"))
 if err != nil {
@@ -125,6 +125,13 @@ for _, r := range results {
 	log.Printf("phase=%s status=%s duration=%s", r.Phase, r.Status, r.Duration)
 }
 ```
+
+When `WithValidationKubeconfig` is omitted or passed an empty string,
+`ValidateState` uses the shared default Kubernetes client and its standard
+discovery chain: `KUBECONFIG`, `~/.kube/config`, then in-cluster configuration.
+When an explicit path is provided, the SDK reloads that kubeconfig and creates a
+fresh client for each validation run. The run reuses that client for all of its
+Kubernetes operations.
 
 The `recipe` argument to `ValidateState` MUST be the `*RecipeResult`
 returned by the same Client's `ResolveRecipe` (or `LoadRecipe`) call —
