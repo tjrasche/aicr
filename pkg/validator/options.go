@@ -38,6 +38,15 @@ func WithCommit(commit string) Option {
 	}
 }
 
+// WithKubeconfig sets an explicit kubeconfig path for all Kubernetes API
+// operations performed by the validation run. Empty uses the standard
+// KUBECONFIG, ~/.kube/config, then in-cluster discovery chain.
+func WithKubeconfig(kubeconfig string) Option {
+	return func(v *Validator) {
+		v.Kubeconfig = kubeconfig
+	}
+}
+
 // WithNamespace sets the Kubernetes namespace for validation Jobs.
 // Default: "aicr-validation".
 func WithNamespace(namespace string) Option {

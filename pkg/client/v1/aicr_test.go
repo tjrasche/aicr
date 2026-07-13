@@ -19,6 +19,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -1584,6 +1585,30 @@ func TestValidateState_PhaseSelection(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestValidateState_CustomKubeconfig proves the stable SDK surface threads an
+// explicit kubeconfig all the way to validation cluster preparation. A missing
+// path must be reported by name; falling back to the process-global/default
+// client would either contact the wrong cluster or fail without that path.
+func TestValidateState_CustomKubeconfig(t *testing.T) {
+	t.Parallel()
+
+	client, result := loadTestRecipe(t)
+	kubeconfig := filepath.Join(t.TempDir(), "missing-kubeconfig.yaml")
+
+	_, err := client.ValidateState(t.Context(), result, k8sVersionSnapshot(),
+		aicr.WithValidationKubeconfig(kubeconfig),
+		aicr.WithValidationPhases(aicr.PhaseDeployment))
+	if err == nil {
+		t.Fatal("expected custom kubeconfig error, got nil")
+	}
+	if !errors.Is(err, aicrerrors.New(aicrerrors.ErrCodeInternal, "")) {
+		t.Errorf("error code = %v, want ErrCodeInternal", err)
+	}
+	if !strings.Contains(err.Error(), kubeconfig) {
+		t.Errorf("error did not reference custom kubeconfig %q: %v", kubeconfig, err)
 	}
 }
 

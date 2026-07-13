@@ -47,6 +47,9 @@ func TestNewDefaults(t *testing.T) {
 	if v.NoCluster {
 		t.Error("NoCluster should default to false")
 	}
+	if v.Kubeconfig != "" {
+		t.Errorf("Kubeconfig = %q, want empty", v.Kubeconfig)
+	}
 	if len(v.Tolerations) != 1 || v.Tolerations[0].Operator != corev1.TolerationOpExists {
 		t.Errorf("Tolerations should default to tolerate-all, got %v", v.Tolerations)
 	}
@@ -59,6 +62,7 @@ func TestNewWithOptions(t *testing.T) {
 	v := New(
 		WithVersion("1.0.0"),
 		WithCommit("abc1234"),
+		WithKubeconfig("/path/to/kubeconfig"),
 		WithNamespace("custom-ns"),
 		WithRunID("test-run"),
 		WithCleanup(false),
@@ -72,6 +76,9 @@ func TestNewWithOptions(t *testing.T) {
 	}
 	if v.Commit != "abc1234" {
 		t.Errorf("Commit = %q, want %q", v.Commit, "abc1234")
+	}
+	if v.Kubeconfig != "/path/to/kubeconfig" {
+		t.Errorf("Kubeconfig = %q, want %q", v.Kubeconfig, "/path/to/kubeconfig")
 	}
 	if v.Namespace != "custom-ns" {
 		t.Errorf("Namespace = %q, want %q", v.Namespace, "custom-ns")

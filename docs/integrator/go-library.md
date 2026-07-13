@@ -112,9 +112,12 @@ if err != nil {
 }
 
 // ValidateState runs the validation phases against the resolved recipe +
-// observed snapshot. With no WithValidationPhases option it runs all three
-// phases (Deployment, Conformance, Performance) in canonical order.
-results, err := client.ValidateState(ctx, result, snap)
+// observed snapshot. Pass the same kubeconfig used for snapshot collection so
+// namespace, RBAC, ConfigMap, validator Job, and result operations all target
+// that cluster. With no WithValidationPhases option it runs all three phases
+// (Deployment, Conformance, Performance) in canonical order.
+results, err := client.ValidateState(ctx, result, snap,
+	aicr.WithValidationKubeconfig("/path/to/target-kubeconfig"))
 if err != nil {
 	log.Fatalf("validate state: %v", err)
 }
@@ -169,8 +172,8 @@ reports as "skipped - no-cluster mode" and no Kubernetes resources
 are created. Other facade options
 (`WithValidationNamespace`, `WithValidationRunID`,
 `WithValidationCleanup`, `WithValidationImagePullSecrets`,
-`WithValidationTolerations`, `WithValidationNodeSelector`) cover the
-production-controller knobs.
+`WithValidationTolerations`, `WithValidationNodeSelector`,
+`WithValidationKubeconfig`) cover the production-controller knobs.
 
 ## Recipe sources
 

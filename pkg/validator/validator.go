@@ -107,7 +107,7 @@ func (v *Validator) prepareCluster(
 	// Use PropagateOrWrap so a coded inner error (e.g. an invalid kubeconfig
 	// classified as a deterministic config error) survives instead of being
 	// blanket-relabeled ErrCodeInternal, which would mask it as retryable.
-	clientset, _, err := k8sclient.GetKubeClient()
+	clientset, _, err := k8sclient.GetKubeClientWithConfig(v.Kubeconfig)
 	if err != nil {
 		return nil, errors.PropagateOrWrap(err, errors.ErrCodeInternal, "failed to create kubernetes client")
 	}
