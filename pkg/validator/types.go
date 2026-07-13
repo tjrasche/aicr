@@ -36,9 +36,9 @@ type Validator struct {
 	// dev-build validator images to SHA-tagged images pushed by on-push CI.
 	Commit string
 
-	// Kubeconfig is an optional path overriding the Kubernetes client
-	// configuration used for validation namespace, RBAC, ConfigMap, Job, and
-	// result operations. Empty uses the standard discovery chain.
+	// Kubeconfig is an optional, run-scoped path overriding the Kubernetes
+	// client configuration used for validation namespace, RBAC, ConfigMap, Job,
+	// and result operations. Empty uses the shared default client.
 	Kubeconfig string
 
 	// Namespace is the Kubernetes namespace for validation Jobs.

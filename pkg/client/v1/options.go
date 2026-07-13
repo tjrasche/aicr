@@ -161,10 +161,12 @@ func validateOptionsFromConfig(cfg *validateConfig) []validator.Option {
 	return out
 }
 
-// WithValidationKubeconfig sets an explicit kubeconfig path for every
-// Kubernetes API operation performed by Client.ValidateState, including
-// namespace, RBAC, ConfigMap, validator Job, and result operations. Empty uses
-// the standard KUBECONFIG, ~/.kube/config, then in-cluster discovery chain.
+// WithValidationKubeconfig sets an explicit, run-scoped kubeconfig path for
+// every Kubernetes API operation performed by Client.ValidateState, including
+// namespace, RBAC, ConfigMap, validator Job, and result operations. The file is
+// reloaded for each validation run. Empty uses the shared default Kubernetes
+// client and its standard KUBECONFIG, ~/.kube/config, then in-cluster discovery
+// chain.
 func WithValidationKubeconfig(kubeconfig string) ValidateOption {
 	return func(c *validateConfig) { c.kubeconfig = kubeconfig }
 }
