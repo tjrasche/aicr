@@ -96,9 +96,9 @@ type clusterState struct {
 	stopCh    chan struct{}
 }
 
-// kubeClientFactory constructs the run-scoped Kubernetes client. Tests inject
-// this seam to verify kubeconfig propagation without reading kubeconfig files
-// or contacting a live cluster.
+// kubeClientFactory constructs a run-scoped Kubernetes client for an explicit
+// kubeconfig path. Tests inject this seam to verify explicit-path propagation
+// without reading kubeconfig files or contacting a live cluster.
 type kubeClientFactory func(kubeconfig string) (kubernetes.Interface, error)
 
 // prepareCluster sets up namespace, RBAC, data ConfigMaps, and informer factory.
@@ -114,18 +114,18 @@ func (v *Validator) prepareCluster(
 	// blanket-relabeled ErrCodeInternal, which would mask it as retryable.
 	var clientset kubernetes.Interface
 	var err error
+	kubeconfig := strings.TrimSpace(v.Kubeconfig)
 	switch {
-	case v.kubeClientFactory != nil:
-		clientset, err = v.kubeClientFactory(v.Kubeconfig)
-	case strings.TrimSpace(v.Kubeconfig) == "":
+	case kubeconfig == "":
 		// With no per-run override, use the package-wide default client so all
 		// consumers retain standard discovery and connection reuse semantics.
 		clientset, _, err = k8sclient.GetKubeClient()
+	case v.kubeClientFactory != nil:
+		clientset, err = v.kubeClientFactory(kubeconfig)
 	default:
 		// Explicit overrides are run-scoped: reload the file instead of retaining
 		// the client in the process-wide path cache. clusterState reuses this client
 		// for every phase and cleanup operation within the current run.
-		kubeconfig := strings.TrimSpace(v.Kubeconfig)
 		clientset, _, err = k8sclient.BuildKubeClient(kubeconfig)
 	}
 	if err != nil {

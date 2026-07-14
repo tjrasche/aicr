@@ -109,7 +109,7 @@ func TestPrepareClusterPropagatesCustomKubeconfig(t *testing.T) {
 
 	const wantKubeconfig = "/path/to/target-kubeconfig"
 	wantErr := stderrors.New("stop before cluster access")
-	v := New(WithKubeconfig(wantKubeconfig))
+	v := New(WithKubeconfig("  " + wantKubeconfig + "  "))
 
 	var gotKubeconfig string
 	v.kubeClientFactory = func(kubeconfig string) (kubernetes.Interface, error) {
@@ -123,6 +123,37 @@ func TestPrepareClusterPropagatesCustomKubeconfig(t *testing.T) {
 	}
 	if gotKubeconfig != wantKubeconfig {
 		t.Errorf("kubeconfig = %q, want %q", gotKubeconfig, wantKubeconfig)
+	}
+}
+
+// TestPrepareClusterEmptyKubeconfigUsesDefaultClient verifies that empty input
+// is routed through default discovery without consulting the explicit-path
+// client factory. The environment is cleared so default discovery fails before
+// any cluster access, keeping the test hermetic.
+func TestPrepareClusterEmptyKubeconfigUsesDefaultClient(t *testing.T) {
+	t.Setenv("KUBECONFIG", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "")
+
+	wantFactoryErr := stderrors.New("explicit-path factory called")
+	v := New(WithKubeconfig(" \t "))
+	factoryCalled := false
+	v.kubeClientFactory = func(string) (kubernetes.Interface, error) {
+		factoryCalled = true
+		return nil, wantFactoryErr
+	}
+
+	_, err := v.prepareCluster(t.Context(), nil, nil)
+	if err == nil {
+		t.Fatal("prepareCluster() error = nil, want default discovery error")
+	}
+	if factoryCalled {
+		t.Error("prepareCluster() called explicit-path factory for empty kubeconfig")
+	}
+	if stderrors.Is(err, wantFactoryErr) {
+		t.Errorf("prepareCluster() error = %v, want default discovery error", err)
 	}
 }
 
