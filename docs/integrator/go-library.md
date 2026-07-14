@@ -112,9 +112,9 @@ if err != nil {
 }
 
 // ValidateState runs the validation phases against the resolved recipe +
-// observed snapshot. Here, the same kubeconfig used for snapshot collection
-// ensures that namespace, RBAC, ConfigMap, validator Job, and result operations
-// all target that cluster. With no WithValidationPhases option it runs all three
+// observed snapshot. Pass the same kubeconfig you used for snapshot collection
+// so that namespace, RBAC, ConfigMap, validator Job, and result operations all
+// target that cluster. With no WithValidationPhases option it runs all three
 // phases (Deployment, Conformance, Performance) in canonical order.
 results, err := client.ValidateState(ctx, result, snap,
 	aicr.WithValidationKubeconfig("/path/to/target-kubeconfig"))
