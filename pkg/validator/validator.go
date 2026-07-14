@@ -19,7 +19,6 @@ import (
 	stderrors "errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
@@ -127,14 +126,6 @@ func (v *Validator) prepareCluster(
 		// the client in the process-wide path cache. clusterState reuses this client
 		// for every phase and cleanup operation within the current run.
 		kubeconfig := strings.TrimSpace(v.Kubeconfig)
-		file, openErr := os.Open(kubeconfig) //nolint:gosec // caller-supplied kubeconfig is intentionally checked for readability
-		if openErr != nil {
-			return nil, errors.WrapWithContext(errors.ErrCodeInvalidRequest,
-				"failed to open kubeconfig file", openErr,
-				map[string]any{"kubeconfig": kubeconfig})
-		}
-		_ = file.Close() // read-only handle; BuildKubeClient reopens the file
-
 		clientset, _, err = k8sclient.BuildKubeClient(kubeconfig)
 	}
 	if err != nil {
