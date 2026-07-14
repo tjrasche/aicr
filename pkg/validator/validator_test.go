@@ -16,7 +16,7 @@ package validator
 
 import (
 	"context"
-	"errors"
+	stderrors "errors"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -24,6 +24,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/NVIDIA/aicr/pkg/errors"
 	"github.com/NVIDIA/aicr/pkg/recipe"
 	"github.com/NVIDIA/aicr/pkg/snapshotter"
 	"github.com/NVIDIA/aicr/pkg/validator/catalog"
@@ -107,7 +108,7 @@ func TestPrepareClusterPropagatesCustomKubeconfig(t *testing.T) {
 	t.Parallel()
 
 	const wantKubeconfig = "/path/to/target-kubeconfig"
-	wantErr := errors.New("stop before cluster access")
+	wantErr := stderrors.New("stop before cluster access")
 	v := New(WithKubeconfig(wantKubeconfig))
 
 	var gotKubeconfig string
@@ -117,11 +118,32 @@ func TestPrepareClusterPropagatesCustomKubeconfig(t *testing.T) {
 	}
 
 	_, err := v.prepareCluster(t.Context(), nil, nil)
-	if !errors.Is(err, wantErr) {
+	if !stderrors.Is(err, wantErr) {
 		t.Fatalf("prepareCluster() error = %v, want wrapped injected error", err)
 	}
 	if gotKubeconfig != wantKubeconfig {
 		t.Errorf("kubeconfig = %q, want %q", gotKubeconfig, wantKubeconfig)
+	}
+}
+
+// TestPrepareClusterRejectsMissingKubeconfig verifies that a typo in a
+// caller-supplied path is classified as invalid input before Kubernetes client
+// construction can relabel the filesystem error as an internal failure.
+func TestPrepareClusterRejectsMissingKubeconfig(t *testing.T) {
+	t.Parallel()
+
+	kubeconfig := filepath.Join(t.TempDir(), "missing-kubeconfig")
+	v := New(WithKubeconfig(kubeconfig))
+
+	_, err := v.prepareCluster(t.Context(), nil, nil)
+	if err == nil {
+		t.Fatal("prepareCluster() error = nil, want invalid request")
+	}
+	if !stderrors.Is(err, errors.New(errors.ErrCodeInvalidRequest, "")) {
+		t.Errorf("prepareCluster() error = %v, want ErrCodeInvalidRequest", err)
+	}
+	if !stderrors.Is(err, fs.ErrNotExist) {
+		t.Errorf("prepareCluster() error = %v, want wrapped fs.ErrNotExist", err)
 	}
 }
 

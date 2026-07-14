@@ -19,6 +19,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -125,7 +126,16 @@ func (v *Validator) prepareCluster(
 		// Explicit overrides are run-scoped: reload the file instead of retaining
 		// the client in the process-wide path cache. clusterState reuses this client
 		// for every phase and cleanup operation within the current run.
-		clientset, _, err = k8sclient.BuildKubeClient(v.Kubeconfig)
+		kubeconfig := strings.TrimSpace(v.Kubeconfig)
+		file, openErr := os.Open(kubeconfig) //nolint:gosec // caller-supplied kubeconfig is intentionally checked for readability
+		if openErr != nil {
+			return nil, errors.WrapWithContext(errors.ErrCodeInvalidRequest,
+				"failed to open kubeconfig file", openErr,
+				map[string]any{"kubeconfig": kubeconfig})
+		}
+		_ = file.Close() // read-only handle; BuildKubeClient reopens the file
+
+		clientset, _, err = k8sclient.BuildKubeClient(kubeconfig)
 	}
 	if err != nil {
 		return nil, errors.PropagateOrWrap(err, errors.ErrCodeInternal, "failed to create kubernetes client")
