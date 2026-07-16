@@ -16,6 +16,7 @@ package cli
 
 import (
 	"context"
+	stderrors "errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -24,8 +25,106 @@ import (
 
 	"github.com/urfave/cli/v3"
 
+	aicr "github.com/NVIDIA/aicr/pkg/client/v1"
+	"github.com/NVIDIA/aicr/pkg/errors"
+	"github.com/NVIDIA/aicr/pkg/serializer"
+	"github.com/NVIDIA/aicr/pkg/snapshotter"
 	v1 "github.com/NVIDIA/aicr/pkg/validator/v1"
 )
+
+// isolateValidationKubeconfigs gives validation two different invalid paths:
+// target is the explicit --kubeconfig value under test, while fallback is what
+// default discovery would choose. Both fail before any Kubernetes API call,
+// keeping tests hermetic while making a regression to the default client
+// observable in the resulting error.
+func isolateValidationKubeconfigs(t *testing.T) (target, fallback string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	target = filepath.Join(dir, "target-kubeconfig")
+	fallback = filepath.Join(dir, "default-kubeconfig")
+	t.Setenv("KUBECONFIG", fallback)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "")
+	return target, fallback
+}
+
+func assertExplicitKubeconfigError(t *testing.T, err error, target, fallback string) {
+	t.Helper()
+
+	if err == nil {
+		t.Fatal("error = nil, want explicit kubeconfig error")
+	}
+	if !stderrors.Is(err, errors.New(errors.ErrCodeInvalidRequest, "")) {
+		t.Errorf("error = %v, want ErrCodeInvalidRequest", err)
+	}
+	if !strings.Contains(err.Error(), target) {
+		t.Errorf("error = %v, want explicit kubeconfig path %q", err, target)
+	}
+	if strings.Contains(err.Error(), fallback) {
+		t.Errorf("error = %v, unexpectedly used default kubeconfig %q", err, fallback)
+	}
+}
+
+// TestRunValidationPropagatesKubeconfigToValidator pins the missing CLI facade
+// wiring: the kubeconfig used for inputs and output must also select the client
+// used for validation namespace, RBAC, ConfigMaps, Jobs, results, and cleanup.
+func TestRunValidationPropagatesKubeconfigToValidator(t *testing.T) {
+	target, fallback := isolateValidationKubeconfigs(t)
+
+	const recipeYAML = `kind: RecipeResult
+apiVersion: aicr.run/v1alpha2
+metadata:
+  version: test
+componentRefs:
+  - name: gpu-operator
+    type: helm
+    chart: gpu-operator
+    source: https://helm.ngc.nvidia.com/nvidia
+    version: v25.3.4
+deploymentOrder:
+  - gpu-operator
+`
+	recipePath := filepath.Join(t.TempDir(), "recipe.yaml")
+	if err := os.WriteFile(recipePath, []byte(recipeYAML), 0o600); err != nil {
+		t.Fatalf("write recipe: %v", err)
+	}
+
+	client, err := aicr.NewClient(aicr.WithRecipeSource(aicr.EmbeddedSource()))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	rec, err := client.LoadRecipe(t.Context(), recipePath, "")
+	if err != nil {
+		t.Fatalf("LoadRecipe: %v", err)
+	}
+
+	err = runValidation(t.Context(), client, rec, &snapshotter.Snapshot{}, validationConfig{
+		kubeconfig:          target,
+		output:              filepath.Join(t.TempDir(), "report.yaml"),
+		outFormat:           serializer.FormatYAML,
+		validationNamespace: "aicr-validation",
+		cleanup:             true,
+	})
+	assertExplicitKubeconfigError(t, err, target, fallback)
+}
+
+// TestDeployAgentForValidationUsesExplicitKubeconfigFromStart ensures live
+// snapshot capture does not pre-create its namespace through the default
+// client before handing the explicit path to snapshotter.
+func TestDeployAgentForValidationUsesExplicitKubeconfigFromStart(t *testing.T) {
+	target, fallback := isolateValidationKubeconfigs(t)
+
+	_, err := deployAgentForValidation(t.Context(), &validateAgentConfig{
+		kubeconfig: target,
+		namespace:  "aicr-validation",
+	})
+	assertExplicitKubeconfigError(t, err, target, fallback)
+}
 
 // TestResolveCNCFAllocationPolicy exercises the #1629 policy threading for
 // --cncf-submission runs: no recipe context resolves to an empty policy

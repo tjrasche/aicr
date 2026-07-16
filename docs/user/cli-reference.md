@@ -821,7 +821,7 @@ aicr validate [flags]
 | `--fail-on-error` | | bool | true | Exit with non-zero status if any constraint fails |
 | `--fail-fast` | | bool | false | Stop after the first phase that fails. By default all phases run and produce results. |
 | `--output` | `-o` | string | stdout | Output destination: file path, ConfigMap URI (`cm://namespace/name`), or stdout |
-| `--kubeconfig` | `-k` | string | ~/.kube/config | Path to kubeconfig file (used when `--recipe`, `--snapshot`, or `--output` is a ConfigMap URI) |
+| `--kubeconfig` | `-k` | string | ~/.kube/config | Path to kubeconfig file for the entire validation run: live snapshot capture, ConfigMap recipe/snapshot reads, validation namespace/RBAC/ConfigMaps/Jobs/results/cleanup, and ConfigMap output. Omit it to use standard Kubernetes client discovery. |
 | `--namespace` | `-n` | string | aicr-validation | Kubernetes namespace for validation Job deployment |
 | `--image` | | string | ghcr.io/nvidia/aicr:latest | Container image for validation Job |
 | `--image-pull-secret` | | string[] | | Image pull secrets for private registries (repeatable) |
@@ -937,7 +937,7 @@ aicr validate \
   --snapshot snapshot.yaml \
   --phase performance
 
-# With custom kubeconfig
+# Run every cluster operation against a custom target cluster
 aicr validate \
   --recipe recipe.yaml \
   --snapshot cm://gpu-operator/aicr-snapshot \
