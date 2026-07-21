@@ -40,6 +40,8 @@ navigation:
         path: user/recipe-health.md
       - page: TestGrid
         path: user/testgrid.md
+      - page: Evidence Dashboard
+        path: user/evidence-dashboard.md
       - page: Validation
         path: user/validation.md
       - page: Coverage Matrix
