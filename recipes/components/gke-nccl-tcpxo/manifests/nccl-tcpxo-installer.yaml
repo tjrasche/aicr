@@ -71,7 +71,7 @@ spec:
       initContainers:
         # ubuntu:24.04 LTS digest-pinned for reproducibility. Bump the tag
         # and digest together when refreshing.
-        - image: "ubuntu:26.04@sha256:6df9e8dd1eac389ebfef692c9648449adeb815d01e16e29cd6f3e50fe64ba9a6"
+        - image: "ubuntu:26.04@sha256:9559ceb7c21e528e233e8dff26a0fb2682f4094cce06176eeb075d87a22b31de"
           name: pre-installation
           securityContext:
             privileged: true
